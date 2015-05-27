@@ -1,0 +1,24 @@
+group 'com.mechzombie'
+version '1.0-SNAPSHOT'
+
+apply plugin: 'groovy'
+
+
+sourceCompatibility = 1.8
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compile (
+        'org.codehaus.groovy:groovy-all:2.4.3',
+        'org.codehaus.gpars:gpars:1.2.1',
+        'org.slf4j:slf4j-api:1.7.12'
+
+    )
+
+    testCompile (
+        group: 'junit', name: 'junit', version: '4.11'
+    )
+}
