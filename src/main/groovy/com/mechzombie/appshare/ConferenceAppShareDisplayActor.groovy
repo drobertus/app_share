@@ -1,39 +1,38 @@
 package com.mechzombie.appshare
 
+import com.mechzombie.appshare.returned.ReturnedData
+import com.mechzombie.appshare.state.ScreenState
+import com.mechzombie.appshare.state.Window
+import com.mechzombie.appshare.state.WindowParamEnum
+import com.mechzombie.appshare.update.ScreenUpdate
+import com.mechzombie.appshare.update.WindowDelta
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import groovyx.gpars.actor.DefaultActor
-
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ConcurrentSkipListMap
-import java.util.concurrent.CopyOnWriteArrayList
 
 @CompileStatic
 @Slf4j
 class ConferenceAppShareDisplayActor extends DefaultActor {
 
     /**
-     * Screen has a full map of the current display
+     * Screen state is a full working set of the data
      */
-    Map<String, DisplayUnit> screen
-
-    /**
-     * received units maintains an ordered list of messages.
-     * As new units are received existing ones earlier in the list are removed
-     *
-     */
-    ConcurrentSkipListMap<Long, Map<String, DisplayUnit>> receivedUnits =
-        new ConcurrentSkipListMap<Long, Map<String, DisplayUnit>>()
+    protected ScreenState screenState = new ScreenState()
 
 
-    ConferenceAppShareDisplayActor(int height, int width) {
-        screen = new ConcurrentHashMap<String, DisplayUnit>((height * width) + 20)
-    }
+    /** A fast, read-only set of data that can be pulled without interference
+     * to the working copy as windowData are made to it
+    */
+    private ScreenState readOnlyData = new ScreenState()
+
+
+
+    private int revision = 0;
 
     @Override
     protected void act() {
         loop {
-            react { List<DisplayUnit> inboundChanges ->
+            react { ScreenUpdate inboundChanges ->
                 addUpdates(inboundChanges)
             }
         }
@@ -46,67 +45,73 @@ class ConferenceAppShareDisplayActor extends DefaultActor {
      * @param changes
      * @return
      */
-    private def addUpdates(List<DisplayUnit> changes) {
-        long arrivalTime = System.currentTimeMillis()
+    private void addUpdates(ScreenUpdate screenChanges) {
 
-        Map<String, DisplayUnit> newMap = new HashMap<String, DisplayUnit>()
-        receivedUnits.put(arrivalTime, newMap)
-        changes.each {
-            it.id = "${it.x}-${it.y}"
-            it.arrivalTime = arrivalTime
+        int newRev = revision + 1
 
-            newMap.put(it.id, it)
+        screenState.revision = newRev
 
-            DisplayUnit lastAddedUnit = screen.get(it.id)
-            screen.put(it.id, it)
+        //see if the screen params need to be set
+        if (screenChanges.screenHeight) {
+            this.screenState.updateScreenParam(WindowParamEnum.screenHeight, screenChanges.screenHeight, newRev)
+        }
+        if (screenChanges.screenHeight) {
+            this.screenState.updateScreenParam(WindowParamEnum.screenWidth, screenChanges.screenWidth, newRev)
+        }
 
-            //get the data of when it was last inserted
-            if(lastAddedUnit) {
-                //remove it from the display
-                //the assumption is we can make this a simple map since it is only modified at the
-                //level of the add, by one thread
-                Map<String, DisplayUnit> areaCandidate = receivedUnits.get(lastAddedUnit.arrivalTime)
-                DisplayUnit du = areaCandidate.remove(it.id)
-                if(du) {
-                    println "removing an element ${it.id} from time ${lastAddedUnit.arrivalTime}"
-                }
+        for(WindowDelta aWin : screenChanges.windowDeltas) {
+            //get the windows state
+            Window stateWin = this.screenState.windows.get(aWin.id)
+            //create a new one if necessary
+            if(!stateWin) {
+                stateWin = new Window(id: aWin.id)
+                screenState.windows.put(stateWin.id, stateWin)
+            }
+
+            stateWin.updateState(newRev, aWin)
+
+        }
+
+        //TODO: update entire read only tree and update revision in one atomic operation
+        println "Revision being set to $newRev"
+
+        //get a copy of the data
+
+
+        //set the readOnly version to be the copy with an atomic operation
+
+        revision = newRev
+    }
+
+    /**
+     * Use this for read-only access
+     * @param lastRev
+     * @return
+     */
+    ReturnedData getData(Integer lastRev = 0) {
+        return getChangesSinceRev(lastRev)
+    }
+
+
+    private ReturnedData getChangesSinceRev(int rev) {
+
+        log.info "getting windowData since $rev up to $revision"
+        ReturnedData rd = new ReturnedData()
+        rd.revision = this.screenState.revision
+
+        screenState.getScreenParams().values().each {
+            println "screen param = ${it.type}, value = ${it.value}, rev= ${it.revision}"
+            if(it.revision > rev) {
+                println "adding params ${it.type}"
+                rd.screenParams.add(it)
             }
         }
-    }
 
-
-    ReturnedData getData(Long time = null) {
-        if(time) {
-            return getChangesSinceTime(time)
-        }
-        return getCurrentState()
-    }
-
-    private ReturnedData getCurrentState() {
-        ReturnedData rd = new ReturnedData()
-        rd.returnTime = System.currentTimeMillis()
-        rd.returnedData.addAll(screen.values())
-        log.info "current state returned at ${rd.returnTime}"
-        return rd
-    }
-
-    private ReturnedData getChangesSinceTime(long time) {
-
-        println ("getting changes since $time")
-        ReturnedData rd = new ReturnedData()
-        rd.returnTime = System.currentTimeMillis()
-        List<DisplayUnit> theResults = rd.returnedData
-        NavigableSet<Long> keys = receivedUnits.descendingKeySet()
-        Iterator<Long> iterator = keys.iterator()
-        while(iterator.hasNext()) {
-            long installedTime = iterator.next()
-
-            if(installedTime <= time) {
-                break;
+        screenState.windows.values().each {
+            if(it.revision > rev) {
+                rd.windowData.add(it.getDelta(rev))
             }
-            theResults.addAll(receivedUnits.get(installedTime).values())
         }
-        println "returning delta of size = ${theResults.size()}"
         return rd
     }
 }
